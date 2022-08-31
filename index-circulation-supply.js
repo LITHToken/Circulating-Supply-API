@@ -24,19 +24,25 @@ const sub_urls = {
   ],
 };
 
+const text_to_image_url =
+  "https://sl6yvoy2r7cwa2gyd23fzznkau0baoki.lambda-url.us-east-1.on.aws/?text=";
+
 exports.handler = async (event) => {
   let body;
   let statusCode = "200";
-  const headers = {
+  let headers = {
     "Content-Type": "application/json",
   };
+  let network = event.queryStringParameters.network;
+  const png = event.queryStringParameters.png;
+  let total_supply = BigInt("0");
 
   try {
     if (
       event.requestContext.http.method == "GET" &&
-      event.rawPath == "/circulation-supply"
+      (event.rawPath == "/total-supply" ||
+        event.rawPath == "/circulation-supply")
     ) {
-      let network = event.queryStringParameters.network;
       if (
         network == "eth" ||
         network == "bsc" ||
@@ -44,38 +50,18 @@ exports.handler = async (event) => {
         network == "all"
       ) {
         network = network == "all" ? ["eth", "bsc", "poly"] : [network];
-        let total_supply = BigInt("0");
         let response;
         for (let n in network) {
-          response = await process_get(total_supply_url[network[n]]);
+          response = await process_get_json(total_supply_url[network[n]]);
           total_supply += BigInt(response["result"]);
-          for (let i in sub_urls[network[n]]) {
-            const sub_response = await process_get(sub_urls[network[n]][i]);
-            total_supply -= BigInt(sub_response["result"]);
+          if (event.rawPath == "/circulation-supply") {
+            for (let i in sub_urls[network[n]]) {
+              const sub_response = await process_get_json(
+                sub_urls[network[n]][i]
+              );
+              total_supply -= BigInt(sub_response["result"]);
+            }
           }
-        }
-        response["result"] = total_supply.toString();
-        body = response;
-      } else {
-        throw new Error(`Bad network parameter`);
-      }
-    } else if (
-      event.requestContext.http.method == "GET" &&
-      event.rawPath == "/total-supply"
-    ) {
-      let network = event.queryStringParameters.network;
-      if (
-        network == "eth" ||
-        network == "bsc" ||
-        network == "poly" ||
-        network == "all"
-      ) {
-        network = network == "all" ? ["eth", "bsc", "poly"] : [network];
-        let total_supply = BigInt("0");
-        let response;
-        for (let n in network) {
-          response = await process_get(total_supply_url[network[n]]);
-          total_supply += BigInt(response["result"]);
         }
         response["result"] = total_supply.toString();
         body = response;
@@ -92,25 +78,66 @@ exports.handler = async (event) => {
     body = JSON.stringify(body);
   }
 
-  return {
-    statusCode,
-    body,
-    headers,
-  };
+  if (png && statusCode == "200") {
+    const isBase64Encoded = true;
+    body = await process_get_binary(
+      text_to_image_url + total_supply.toString()
+    );
+    headers = {
+      "Content-Type": "image/png",
+    };
+
+    return {
+      statusCode,
+      isBase64Encoded,
+      body,
+      headers,
+    };
+  } else {
+    return {
+      statusCode,
+      body,
+      headers,
+    };
+  }
 };
 
-const process_get = async (url) => {
+const process_get_json = async (url) => {
   return new Promise((resolve, reject) => {
     const req = https.get(url, (res) => {
-      let rawData = "";
+      let rawData = [];
 
       res.on("data", (chunk) => {
-        rawData += chunk;
+        rawData.push(chunk);
       });
 
       res.on("end", () => {
         try {
-          resolve(JSON.parse(rawData));
+          resolve(JSON.parse(Buffer.concat(rawData).toString()));
+        } catch (err) {
+          reject(new Error(err));
+        }
+      });
+    });
+
+    req.on("error", (err) => {
+      reject(new Error(err));
+    });
+  });
+};
+
+const process_get_binary = async (url) => {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, (res) => {
+      let rawData = [];
+
+      res.on("data", (chunk) => {
+        rawData.push(chunk);
+      });
+
+      res.on("end", () => {
+        try {
+          resolve(Buffer.concat(rawData).toString("base64"));
         } catch (err) {
           reject(new Error(err));
         }
